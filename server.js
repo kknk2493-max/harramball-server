@@ -22,7 +22,7 @@ const server = http.createServer((req, res) => {
     res.end('HarramBall röle sunucusu ayakta. Bağlı istemci: ' + idToSocket.size);
 });
 
-const io = new Server(server, { cors: { origin: '*' }, pingInterval: 10000, pingTimeout: 20000 });
+const io = new Server(server, { cors: { origin: '*' }, pingInterval: 5000, pingTimeout: 10000 });
 
 io.on('connection', (socket) => {
     let myId = null;
