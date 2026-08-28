@@ -16,13 +16,34 @@ const { Server } = require('socket.io');
 
 const PORT = process.env.PORT || 3000;
 const idToSocket = new Map(); // peerId -> socket
+const knownContacts = new Map(); // peerId -> Set<peerId> (kimlerle mesajlaştığını biliyoruz)
+
+function linkContacts(a, b) {
+    if (!a || !b) return;
+    if (!knownContacts.has(a)) knownContacts.set(a, new Set());
+    if (!knownContacts.has(b)) knownContacts.set(b, new Set());
+    knownContacts.get(a).add(b);
+    knownContacts.get(b).add(a);
+}
 
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('HarramBall röle sunucusu ayakta. Bağlı istemci: ' + idToSocket.size);
 });
 
-const io = new Server(server, { cors: { origin: '*' }, pingInterval: 5000, pingTimeout: 10000 });
+const io = new Server(server, {
+    cors: { origin: '*' },
+    pingInterval: 5000,
+    pingTimeout: 10000,
+    // OPTİMİZASYON 1: WebSocket sıkıştırmasını (permessage-deflate) kapattık.
+    // Sıkıştırma her mesajda CPU harcıyor - bizim mesajlarımız zaten küçük
+    // (pozisyon/top verisi), sıkıştırmanın kazancı yok ama maliyeti var.
+    // Bedava planın kısıtlı CPU'sunda bu, gerçek bir fark yaratıyor.
+    perMessageDeflate: false,
+    // OPTİMİZASYON 2: socket.io'nun kendi istemci dosyalarını sunmasını kapattık
+    // (biz zaten CDN'den yüklüyoruz) - gereksiz dosya sunumu CPU/RAM harcar.
+    serveClient: false
+});
 
 io.on('connection', (socket) => {
     let myId = null;
@@ -41,6 +62,7 @@ io.on('connection', (socket) => {
     socket.on('connect_to', ({ to }) => {
         const target = idToSocket.get(to);
         if (target) {
+            linkContacts(myId, to);
             target.emit('incoming_connection', { from: myId });
             socket.emit('connect_ack', { to, ok: true });
         } else {
@@ -71,7 +93,19 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         if (myId && idToSocket.get(myId) === socket) {
             idToSocket.delete(myId);
-            io.emit('peer_disconnected', { id: myId });
+            // OPTİMİZASYON 3: eskiden io.emit(...) ile SUNUCUDAKİ HERKESE haber
+            // gidiyordu - 50 kişi varsa her ayrılışta 50 gereksiz mesaj demekti.
+            // Artık sadece gerçekten bu oyuncuyla mesajlaşmış olanlara gidiyor.
+            const contacts = knownContacts.get(myId);
+            if (contacts) {
+                contacts.forEach(cid => {
+                    const s = idToSocket.get(cid);
+                    if (s) s.emit('peer_disconnected', { id: myId });
+                    const set = knownContacts.get(cid);
+                    if (set) set.delete(myId);
+                });
+                knownContacts.delete(myId);
+            }
         }
     });
 });
