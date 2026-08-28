@@ -61,6 +61,13 @@ io.on('connection', (socket) => {
         if (target) target.emit('relay', { from: myId, data });
     });
 
+    // Bilinçli bağlantı kapatma (conn.close() karşılığı) - eskiden bu hiç yoktu,
+    // yüzünden "odadan çıkan oyuncunun karakteri sahada kalıyordu" bug'ı vardı.
+    socket.on('close_connection', ({ to }) => {
+        const target = idToSocket.get(to);
+        if (target) target.emit('connection_closed', { from: myId });
+    });
+
     socket.on('disconnect', () => {
         if (myId && idToSocket.get(myId) === socket) {
             idToSocket.delete(myId);
