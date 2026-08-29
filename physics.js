@@ -63,6 +63,21 @@ class RoomPhysics {
         if (p) p.input = input;
     }
 
+    // DÜZELTME (v1.1): Eskiden sunucu, oyuncunun konumunu SADECE yön tuşundan
+    // (dx,dy) kendi başına tahmin ediyordu. Bu, oyuncunun kendi ekranındaki
+    // GERÇEK (yerel, akıcı) konumundan zamanla kayıyordu - top, oyuncunun
+    // göründüğü yerde değil, sunucunun "sandığı" hayali yerde çarpışma
+    // arıyordu. Bu yüzden "topa değemiyorum" hissi oluşuyordu. Artık istemci
+    // kendi GERÇEK x/y'sini doğrudan bildiriyor, sunucu tahmin etmiyor -
+      // sadece bu pozisyonu top çarpışması için kullanıyor.
+    setReportedPosition(id, x, y, vx, vy) {
+        const p = this.players.get(id);
+        if (!p) return;
+        p.x = x; p.y = y;
+        p.vx = vx || 0; p.vy = vy || 0;
+        p.reported = true; // bu oyuncu artık kendi konumunu bildiriyor
+    }
+
     resetKickoff() {
         this.ball.x = this.map.width / 2;
         this.ball.y = this.map.height / 2;
@@ -75,7 +90,13 @@ class RoomPhysics {
         const m = this.map;
 
         // --- Oyuncu hareketi ---
+        // v1.1: "reported" (konumunu doğrudan bildiren) oyuncular için
+        // sunucu ARTIK kendi tahminini yapmıyor - istemcinin gerçek konumu
+        // aynen kullanılıyor (yukarıdaki setReportedPosition ile geldi).
+        // Bildirmeyen oyuncular için eski yön-tabanlı tahmin devam ediyor
+        // (geriye dönük uyumluluk / güvenlik ağı).
         this.players.forEach(p => {
+            if (p.reported) return; // konumu zaten güncel, tahmine gerek yok
             const speed = (p.input.running ? PHYSICS.MAX_PLAYER_SPEED * 1.4 : PHYSICS.MAX_PLAYER_SPEED);
             const targetVx = p.input.dx * speed;
             const targetVy = p.input.dy * speed;

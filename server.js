@@ -133,13 +133,23 @@ io.on('connection', (socket) => {
     });
 
     // İstemci her karede "ben şu yöne gidiyorum, tekmeliyorum" diye bildirir.
-    // Gerçek hareket/çarpışma hesaplaması SADECE burada, sunucuda yapılır -
-    // istemci artık kendi fiziğini otorite olarak kullanmıyor.
     socket.on('player_input', (input) => {
         const roomId = peerToRoom.get(myId);
         if (!roomId) return;
         const rp = physicsRooms.get(roomId);
         if (rp) rp.setInput(myId, input);
+    });
+
+    // v1.1 DÜZELTME: İstemci artık kendi GERÇEK konumunu da bildiriyor
+    // (yerel, akıcı hesaplamasından). Sunucu bunu tahmin etmek yerine
+    // AYNEN kullanıyor - "topa değemiyorum" sorununun kök sebebi buydu
+    // (sunucunun tahmini konum ile ekrandaki gerçek konum birbirinden
+    // kayıyordu, top hayali bir yerde çarpışma arıyordu).
+    socket.on('player_position', ({ x, y, vx, vy }) => {
+        const roomId = peerToRoom.get(myId);
+        if (!roomId) return;
+        const rp = physicsRooms.get(roomId);
+        if (rp) rp.setReportedPosition(myId, x, y, vx, vy);
     });
 
     socket.on('disconnect', () => {
