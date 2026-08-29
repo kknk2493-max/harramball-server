@@ -13,10 +13,21 @@
 
 const http = require('http');
 const { Server } = require('socket.io');
+const { RoomPhysics } = require('./physics.js');
 
 const PORT = process.env.PORT || 3000;
 const idToSocket = new Map(); // peerId -> socket
 const knownContacts = new Map(); // peerId -> Set<peerId> (kimlerle mesajlaştığını biliyoruz)
+
+// ============================================================
+// FAZ 1 - SUNUCU FİZİK OTORİTESİ
+// ============================================================
+// physicsRooms: roomId -> RoomPhysics (her maçın kendi fizik durumu)
+// roomMembers: roomId -> Set<peerId> (o maçtaki herkes - snapshot kime gidecek)
+// peerToRoom: peerId -> roomId (biri koptuğunda hangi odadan çıkaracağımızı bilelim)
+const physicsRooms = new Map();
+const roomMembers = new Map();
+const peerToRoom = new Map();
 
 function linkContacts(a, b) {
     if (!a || !b) return;
@@ -28,7 +39,7 @@ function linkContacts(a, b) {
 
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('HarramBall röle sunucusu ayakta. Bağlı istemci: ' + idToSocket.size);
+    res.end('HarramBall sunucusu ayakta. Bağlı istemci: ' + idToSocket.size + ', aktif maç: ' + physicsRooms.size);
 });
 
 const io = new Server(server, {
@@ -90,9 +101,52 @@ io.on('connection', (socket) => {
         if (target) target.emit('connection_closed', { from: myId });
     });
 
+    // ---- FAZ 1: SUNUCU FİZİK ODASI ----
+    // İstemci "artık bu maçtayım, fiziği sen hesapla" diyor. roomId = host'un
+    // peer ID'si (istemcideki mevcut oda kimliği mantığıyla birebir aynı).
+    socket.on('join_physics_room', ({ roomId, mapSize, team }) => {
+        if (!roomId || !myId) return;
+        if (!physicsRooms.has(roomId)) {
+            physicsRooms.set(roomId, new RoomPhysics(mapSize || 'medium'));
+            roomMembers.set(roomId, new Set());
+        }
+        physicsRooms.get(roomId).addPlayer(myId, team === 'red' ? 'red' : 'blue');
+        roomMembers.get(roomId).add(myId);
+        peerToRoom.set(myId, roomId);
+    });
+
+    socket.on('leave_physics_room', () => {
+        const roomId = peerToRoom.get(myId);
+        if (!roomId) return;
+        const rp = physicsRooms.get(roomId);
+        if (rp) rp.removePlayer(myId);
+        const members = roomMembers.get(roomId);
+        if (members) { members.delete(myId); if (members.size === 0) { physicsRooms.delete(roomId); roomMembers.delete(roomId); } }
+        peerToRoom.delete(myId);
+    });
+
+    // İstemci her karede "ben şu yöne gidiyorum, tekmeliyorum" diye bildirir.
+    // Gerçek hareket/çarpışma hesaplaması SADECE burada, sunucuda yapılır -
+    // istemci artık kendi fiziğini otorite olarak kullanmıyor.
+    socket.on('player_input', (input) => {
+        const roomId = peerToRoom.get(myId);
+        if (!roomId) return;
+        const rp = physicsRooms.get(roomId);
+        if (rp) rp.setInput(myId, input);
+    });
+
     socket.on('disconnect', () => {
         if (myId && idToSocket.get(myId) === socket) {
             idToSocket.delete(myId);
+            // Fizik odasından da temizle
+            const roomId = peerToRoom.get(myId);
+            if (roomId) {
+                const rp = physicsRooms.get(roomId);
+                if (rp) rp.removePlayer(myId);
+                const members = roomMembers.get(roomId);
+                if (members) { members.delete(myId); if (members.size === 0) { physicsRooms.delete(roomId); roomMembers.delete(roomId); } }
+                peerToRoom.delete(myId);
+            }
             // OPTİMİZASYON 3: eskiden io.emit(...) ile SUNUCUDAKİ HERKESE haber
             // gidiyordu - 50 kişi varsa her ayrılışta 50 gereksiz mesaj demekti.
             // Artık sadece gerçekten bu oyuncuyla mesajlaşmış olanlara gidiyor.
@@ -110,6 +164,29 @@ io.on('connection', (socket) => {
     });
 });
 
+// ============================================================
+// FİZİK TİK DÖNGÜSÜ - saniyede ~60 kere tüm aktif maçları ilerletir
+// ============================================================
+const TICK_MS = 16; // ~60fps
+setInterval(() => {
+    physicsRooms.forEach((rp, roomId) => {
+        const result = rp.step(TICK_MS);
+        const snapshot = rp.getSnapshot();
+        const members = roomMembers.get(roomId);
+        if (!members) return;
+        members.forEach(pid => {
+            const s = idToSocket.get(pid);
+            if (s) s.emit('physics_snapshot', snapshot);
+        });
+        if (result.goal) {
+            members.forEach(pid => {
+                const s = idToSocket.get(pid);
+                if (s) s.emit('goal_scored', { team: result.goal });
+            });
+        }
+    });
+}, TICK_MS);
+
 server.listen(PORT, () => {
-    console.log('HarramBall röle sunucusu ' + PORT + ' portunda çalışıyor.');
+    console.log('HarramBall sunucusu ' + PORT + ' portunda çalışıyor. (Faz 1: fizik motoru aktif)');
 });
