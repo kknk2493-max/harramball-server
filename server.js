@@ -113,6 +113,12 @@ io.on('connection', (socket) => {
         physicsRooms.get(roomId).addPlayer(myId, team === 'red' ? 'red' : 'blue');
         roomMembers.get(roomId).add(myId);
         peerToRoom.set(myId, roomId);
+        // OPTİMİZASYON: socket.io'nun kendi "oda" (room) mekanizmasına katılıyoruz.
+        // Böylece her tik'te üye üye tek tek emit etmek yerine TEK bir yayın
+        // yapıp socket.io'nun kendi içinde dağıtmasını sağlıyoruz - JSON'u her
+        // oyuncu için ayrı ayrı hazırlamak yerine BİR KERE hazırlıyor. Bedava
+        // planın kısıtlı CPU'sunda bu, gerçek bir fark yaratıyor.
+        socket.join('phys_' + roomId);
     });
 
     socket.on('leave_physics_room', () => {
@@ -123,6 +129,7 @@ io.on('connection', (socket) => {
         const members = roomMembers.get(roomId);
         if (members) { members.delete(myId); if (members.size === 0) { physicsRooms.delete(roomId); roomMembers.delete(roomId); } }
         peerToRoom.delete(myId);
+        socket.leave('phys_' + roomId);
     });
 
     // İstemci her karede "ben şu yöne gidiyorum, tekmeliyorum" diye bildirir.
@@ -165,27 +172,35 @@ io.on('connection', (socket) => {
 });
 
 // ============================================================
-// FİZİK TİK DÖNGÜSÜ - saniyede ~60 kere tüm aktif maçları ilerletir
+// FİZİK TİK DÖNGÜSÜ
 // ============================================================
-const TICK_MS = 16; // ~60fps
+// OPTİMİZASYON: fizik hesaplama (step) hassasiyet için 60fps'de kalıyor,
+// ama ağa YAYIN (broadcast) 30fps'e düşürüldü - göz farkı hissetmiyor
+// ama mesaj/CPU yükünü YARIYA indiriyor (bedava planın kısıtlı CPU'sunda
+// bu, ping'i düşürmede en büyük etkiyi yapan değişiklik).
+// Ayrıca "volatile" kullanıyoruz: sunucu o an tıkanıksa eski/gecikmiş
+// bir anlık görüntüyü kuyruğa atmak yerine ATLIYOR - böylece gecikme
+// birikip büyümüyor, her zaman EN GÜNCEL veri gönderiliyor.
+const TICK_MS = 16;       // fizik hassasiyeti: ~60fps
+const BROADCAST_MS = 33;  // ağa yayın: ~30fps
+let _tickAcc = 0;
+
 setInterval(() => {
     physicsRooms.forEach((rp, roomId) => {
         const result = rp.step(TICK_MS);
-        const snapshot = rp.getSnapshot();
-        const members = roomMembers.get(roomId);
-        if (!members) return;
-        members.forEach(pid => {
-            const s = idToSocket.get(pid);
-            if (s) s.emit('physics_snapshot', snapshot);
-        });
         if (result.goal) {
-            members.forEach(pid => {
-                const s = idToSocket.get(pid);
-                if (s) s.emit('goal_scored', { team: result.goal });
-            });
+            // Gol nadir olur ve önemlidir - volatile DEĞİL, kesin ulaşsın
+            io.to('phys_' + roomId).emit('goal_scored', { team: result.goal });
         }
     });
 }, TICK_MS);
+
+setInterval(() => {
+    physicsRooms.forEach((rp, roomId) => {
+        const snapshot = rp.getSnapshot();
+        io.to('phys_' + roomId).volatile.emit('physics_snapshot', snapshot);
+    });
+}, BROADCAST_MS);
 
 server.listen(PORT, () => {
     console.log('HarramBall sunucusu ' + PORT + ' portunda çalışıyor. (Faz 1: fizik motoru aktif)');
