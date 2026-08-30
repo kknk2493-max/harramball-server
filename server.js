@@ -132,19 +132,26 @@ io.on('connection', (socket) => {
         socket.leave('phys_' + roomId);
     });
 
-    // İstemci her karede "ben şu yöne gidiyorum, tekmeliyorum" diye bildirir.
+    // OPTİMİZASYON (v1.2): İstemci artık TEK bir mesajda hem yönünü hem
+    // gerçek konumunu bildiriyor - eskiden 2 ayrı mesaj vardı (60/sn x 2),
+    // bu da bedava sunucunun kısıtlı CPU'sunu tıkayıp ping'i 2-3 saniyeye
+    // fırlatmıştı. Şimdi tek mesaj, saniyede sadece ~20 kere geliyor.
+    socket.on('player_state', ({ x, y, vx, vy, dx, dy, running, kick }) => {
+        const roomId = peerToRoom.get(myId);
+        if (!roomId) return;
+        const rp = physicsRooms.get(roomId);
+        if (!rp) return;
+        rp.setInput(myId, { dx, dy, running, kick });
+        rp.setReportedPosition(myId, x, y, vx, vy);
+    });
+
+    // Geriye dönük uyumluluk (eski istemciler için) - kullanılmıyorsa zararsız
     socket.on('player_input', (input) => {
         const roomId = peerToRoom.get(myId);
         if (!roomId) return;
         const rp = physicsRooms.get(roomId);
         if (rp) rp.setInput(myId, input);
     });
-
-    // v1.1 DÜZELTME: İstemci artık kendi GERÇEK konumunu da bildiriyor
-    // (yerel, akıcı hesaplamasından). Sunucu bunu tahmin etmek yerine
-    // AYNEN kullanıyor - "topa değemiyorum" sorununun kök sebebi buydu
-    // (sunucunun tahmini konum ile ekrandaki gerçek konum birbirinden
-    // kayıyordu, top hayali bir yerde çarpışma arıyordu).
     socket.on('player_position', ({ x, y, vx, vy }) => {
         const roomId = peerToRoom.get(myId);
         if (!roomId) return;
