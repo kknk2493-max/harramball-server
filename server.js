@@ -191,33 +191,43 @@ io.on('connection', (socket) => {
 // ============================================================
 // FİZİK TİK DÖNGÜSÜ
 // ============================================================
-// OPTİMİZASYON: fizik hesaplama (step) hassasiyet için 60fps'de kalıyor,
-// ama ağa YAYIN (broadcast) 30fps'e düşürüldü - göz farkı hissetmiyor
-// ama mesaj/CPU yükünü YARIYA indiriyor (bedava planın kısıtlı CPU'sunda
-// bu, ping'i düşürmede en büyük etkiyi yapan değişiklik).
-// Ayrıca "volatile" kullanıyoruz: sunucu o an tıkanıksa eski/gecikmiş
-// bir anlık görüntüyü kuyruğa atmak yerine ATLIYOR - böylece gecikme
-// birikip büyümüyor, her zaman EN GÜNCEL veri gönderiliyor.
-const TICK_MS = 16;       // fizik hassasiyeti: ~60fps
-const BROADCAST_MS = 33;  // ağa yayın: ~30fps
-let _tickAcc = 0;
+// OPTİMİZASYON (v1.3): İki ayrı zamanlayıcı (60fps hesaplama + 30fps yayın)
+// TEK bir 30fps döngüde birleştirildi. Artık oyuncuların konumu istemciden
+// doğrudan geldiği için (reported position), sunucunun kendi başına 60fps
+// hassasiyetle hesaplaması gereken tek şey topun fiziği - bu da 30fps'de
+// gözle fark edilmez ama zamanlayıcı/CPU yükünü neredeyse yarıya indirir.
+// "volatile": sunucu o an tıkanıksa eski veriyi kuyruğa atmak yerine atlar.
+const TICK_MS = 33; // hem hesaplama hem yayın: ~30fps
 
 setInterval(() => {
     physicsRooms.forEach((rp, roomId) => {
-        const result = rp.step(TICK_MS);
-        if (result.goal) {
-            // Gol nadir olur ve önemlidir - volatile DEĞİL, kesin ulaşsın
-            io.to('phys_' + roomId).emit('goal_scored', { team: result.goal });
+        // KRİTİK GÜVENLİK: try/catch YOKTU - bir odada beklenmedik bir hata
+        // (ör. tam o anda ayrılan bir oyuncu) olursa TÜM SUNUCU SÜRECİ
+        // çöküyordu, Render onu yeniden başlatıyordu (birkaç saniye sürer).
+        // "4-5 saniyelik ping" ve "birden odadan atılma" şikayetlerinin
+        // asıl sebebi büyük ihtimalle buydu. Artık bir odada hata olursa
+        // sadece o oda etkileniyor, sunucu ayakta kalmaya devam ediyor.
+        try {
+            const result = rp.step(TICK_MS);
+            if (result && result.goal) {
+                io.to('phys_' + roomId).emit('goal_scored', { team: result.goal });
+            }
+            const snapshot = rp.getSnapshot();
+            io.to('phys_' + roomId).volatile.emit('physics_snapshot', snapshot);
+        } catch (err) {
+            console.error('[FİZİK HATASI - yakalandı, sunucu ayakta]', roomId, err.message);
         }
     });
 }, TICK_MS);
 
-setInterval(() => {
-    physicsRooms.forEach((rp, roomId) => {
-        const snapshot = rp.getSnapshot();
-        io.to('phys_' + roomId).volatile.emit('physics_snapshot', snapshot);
-    });
-}, BROADCAST_MS);
+// Son bir güvenlik ağı: her ihtimale karşı, yakalanmamış herhangi bir hata
+// sunucuyu tamamen düşürmesin diye process seviyesinde de yakalıyoruz.
+process.on('uncaughtException', (err) => {
+    console.error('[YAKALANMAMIŞ HATA - sunucu ayakta kalmaya çalışıyor]', err);
+});
+process.on('unhandledRejection', (err) => {
+    console.error('[YAKALANMAMIŞ PROMISE HATASI - sunucu ayakta kalmaya çalışıyor]', err);
+});
 
 server.listen(PORT, () => {
     console.log('HarramBall sunucusu ' + PORT + ' portunda çalışıyor. (Faz 1: fizik motoru aktif)');

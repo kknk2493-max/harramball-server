@@ -73,8 +73,12 @@ class RoomPhysics {
     setReportedPosition(id, x, y, vx, vy) {
         const p = this.players.get(id);
         if (!p) return;
+        // GÜVENLİK: bozuk/NaN veri gelirse yok say - yoksa top/oyuncu
+        // konumu kalıcı olarak NaN'a bulaşır ("her şey donar" gibi görünür).
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
         p.x = x; p.y = y;
-        p.vx = vx || 0; p.vy = vy || 0;
+        p.vx = Number.isFinite(vx) ? vx : 0;
+        p.vy = Number.isFinite(vy) ? vy : 0;
         p.reported = true; // bu oyuncu artık kendi konumunu bildiriyor
     }
 
@@ -170,9 +174,13 @@ class RoomPhysics {
     }
 
     getSnapshot() {
+        // OPTİMİZASYON: ondalık basamakları kırpıyoruz (ör. 483.7291834 -> 484) -
+        // oyun için gereksiz hassasiyet, ama mesaj boyutunu küçültüp her
+        // gönderimde birkaç byte tasarruf ediyor - küçük ama bedava bir kazanç.
+        const r = n => Math.round(n * 10) / 10;
         const players = {};
-        this.players.forEach((p, id) => { players[id] = { x: p.x, y: p.y, vx: p.vx, vy: p.vy, team: p.team }; });
-        return { ball: { x: this.ball.x, y: this.ball.y, vx: this.ball.vx, vy: this.ball.vy }, players };
+        this.players.forEach((p, id) => { players[id] = { x: r(p.x), y: r(p.y), vx: r(p.vx), vy: r(p.vy), team: p.team }; });
+        return { ball: { x: r(this.ball.x), y: r(this.ball.y), vx: r(this.ball.vx), vy: r(this.ball.vy) }, players };
     }
 }
 
